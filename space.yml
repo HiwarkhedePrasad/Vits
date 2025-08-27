@@ -1,0 +1,5 @@
+---
+title: Vits WebSocket TTS
+sdk: docker
+sdk_version: 1
+app_port: 7860
