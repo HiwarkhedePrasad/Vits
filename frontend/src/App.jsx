@@ -2,46 +2,64 @@ import React, { useState, useRef, useEffect } from "react";
 import {
   Mic,
   MicOff,
+  Phone,
+  PhoneOff,
   Volume2,
   VolumeX,
-  Send,
   Settings,
-  Play,
-  Pause,
-  Square,
-  Wifi,
-  WifiOff,
+  User,
+  Bot,
 } from "lucide-react";
 import "./App.css";
+
 const App = () => {
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [messages, setMessages] = useState([]);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [audioQueue, setAudioQueue] = useState([]);
-  const [currentAudio, setCurrentAudio] = useState(null);
   const [volume, setVolume] = useState(0.8);
-  const [selectedVoice, setSelectedVoice] = useState(null);
-  const [voices, setVoices] = useState([]);
   const [isConnected, setIsConnected] = useState(false);
   const [wsConnection, setWsConnection] = useState(null);
   const [isAIThinking, setIsAIThinking] = useState(false);
   const [currentSpeaker, setCurrentSpeaker] = useState(null);
   const [availableSpeakers, setAvailableSpeakers] = useState([]);
-  const [useStreamedAudio, setUseStreamedAudio] = useState(true);
+  const [showSettings, setShowSettings] = useState(false);
+  const [callDuration, setCallDuration] = useState(0);
 
   const recognitionRef = useRef(null);
   const audioContextRef = useRef(null);
   const messagesEndRef = useRef(null);
   const audioQueueRef = useRef([]);
   const isPlayingQueueRef = useRef(false);
+  const callStartTimeRef = useRef(null);
+
+  // Call duration timer
+  useEffect(() => {
+    let interval;
+    if (isConnected && callStartTimeRef.current) {
+      interval = setInterval(() => {
+        const elapsed = Math.floor(
+          (Date.now() - callStartTimeRef.current) / 1000
+        );
+        setCallDuration(elapsed);
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [isConnected]);
+
+  // Format call duration
+  const formatDuration = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, "0")}:${secs
+      .toString()
+      .padStart(2, "0")}`;
+  };
 
   // Initialize Web Speech API and WebSocket
   useEffect(() => {
     initializeSpeechRecognition();
-    connectToBackend();
     initializeAudioContext();
-
     return () => {
       if (wsConnection) {
         wsConnection.close();
@@ -87,6 +105,15 @@ const App = () => {
         }
 
         setTranscript(finalTranscript + interimTranscript);
+
+        // Auto-send when user stops speaking
+        if (finalTranscript && !interimTranscript) {
+          setTimeout(() => {
+            if (finalTranscript.trim()) {
+              sendMessage(finalTranscript);
+            }
+          }, 1000);
+        }
       };
 
       recognitionRef.current.onend = () => {
@@ -100,11 +127,6 @@ const App = () => {
     }
   };
 
-  // Auto-scroll to bottom
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
-
   // WebSocket connection to backend
   const connectToBackend = () => {
     try {
@@ -112,6 +134,7 @@ const App = () => {
 
       ws.onopen = () => {
         setIsConnected(true);
+        callStartTimeRef.current = Date.now();
         console.log("Connected to backend");
       };
 
@@ -122,9 +145,9 @@ const App = () => {
 
       ws.onclose = () => {
         setIsConnected(false);
+        callStartTimeRef.current = null;
+        setCallDuration(0);
         console.log("Disconnected from backend");
-        // Attempt to reconnect after 3 seconds
-        setTimeout(connectToBackend, 3000);
       };
 
       ws.onerror = (error) => {
@@ -154,7 +177,6 @@ const App = () => {
         break;
 
       case "text_chunk":
-        // Add AI text chunk to messages
         setMessages((prev) => {
           const lastMessage = prev[prev.length - 1];
           if (
@@ -162,14 +184,12 @@ const App = () => {
             lastMessage.type === "ai" &&
             lastMessage.isStreaming
           ) {
-            // Update existing streaming message
             return prev.map((msg, index) =>
               index === prev.length - 1
                 ? { ...msg, content: msg.content + " " + data.text }
                 : msg
             );
           } else {
-            // Create new streaming message
             return [
               ...prev,
               {
@@ -185,15 +205,13 @@ const App = () => {
         break;
 
       case "audio_chunk":
-        if (useStreamedAudio && data.audio) {
-          // Add audio chunk to queue
+        if (data.audio) {
           addAudioToQueue(data.audio, data.chunk_id, data.text);
         }
         break;
 
       case "response_complete":
         setIsAIThinking(false);
-        // Mark the last message as complete
         setMessages((prev) =>
           prev.map((msg, index) =>
             index === prev.length - 1 && msg.isStreaming
@@ -205,7 +223,6 @@ const App = () => {
 
       case "error":
         console.error("Backend error:", data.message);
-        addMessage("system", `Error: ${data.message}`);
         setIsAIThinking(false);
         break;
 
@@ -223,7 +240,6 @@ const App = () => {
   // Add audio to queue and play
   const addAudioToQueue = async (audioBase64, chunkId, text) => {
     try {
-      // Decode base64 audio
       const audioData = atob(audioBase64);
       const audioBuffer = new Uint8Array(audioData.length);
 
@@ -231,14 +247,12 @@ const App = () => {
         audioBuffer[i] = audioData.charCodeAt(i);
       }
 
-      // Create audio element
       const audioBlob = new Blob([audioBuffer], { type: "audio/wav" });
       const audioUrl = URL.createObjectURL(audioBlob);
 
       const audioElement = new Audio(audioUrl);
       audioElement.volume = volume;
 
-      // Add to queue
       const audioItem = {
         id: chunkId,
         audio: audioElement,
@@ -248,7 +262,6 @@ const App = () => {
 
       audioQueueRef.current.push(audioItem);
 
-      // Start playing queue if not already playing
       if (!isPlayingQueueRef.current) {
         playAudioQueue();
       }
@@ -274,7 +287,6 @@ const App = () => {
       } catch (error) {
         console.error("Error playing audio item:", error);
       } finally {
-        // Clean up URL
         URL.revokeObjectURL(audioItem.url);
       }
     }
@@ -297,16 +309,6 @@ const App = () => {
         reject(error);
       };
 
-      audio.ontimeupdate = () => {
-        // Update current audio reference
-        setCurrentAudio({
-          ...audioItem,
-          currentTime: audio.currentTime,
-          duration: audio.duration,
-        });
-      };
-
-      // Start playback
       audio.play().catch((error) => {
         console.error("Failed to play audio:", error);
         reject(error);
@@ -314,29 +316,9 @@ const App = () => {
     });
   };
 
-  // Stop current audio playback
-  const stopAudio = () => {
-    // Clear the audio queue
-    audioQueueRef.current.forEach((item) => {
-      item.audio.pause();
-      URL.revokeObjectURL(item.url);
-    });
-    audioQueueRef.current = [];
-
-    // Stop current audio
-    if (currentAudio && currentAudio.audio) {
-      currentAudio.audio.pause();
-      currentAudio.audio.currentTime = 0;
-    }
-
-    isPlayingQueueRef.current = false;
-    setIsPlaying(false);
-    setCurrentAudio(null);
-  };
-
   // Speech recognition controls
   const startListening = () => {
-    if (recognitionRef.current && !isListening) {
+    if (recognitionRef.current && !isListening && isConnected) {
       setTranscript("");
       recognitionRef.current.start();
       setIsListening(true);
@@ -367,7 +349,6 @@ const App = () => {
     addMessage("user", text);
     setTranscript("");
 
-    // Send message to backend
     try {
       wsConnection.send(
         JSON.stringify({
@@ -377,7 +358,19 @@ const App = () => {
       );
     } catch (error) {
       console.error("Error sending message:", error);
-      addMessage("system", "Failed to send message to backend");
+    }
+  };
+
+  // Connect/Disconnect call
+  const toggleConnection = () => {
+    if (isConnected && wsConnection) {
+      wsConnection.close();
+      setIsConnected(false);
+      setMessages([]);
+      callStartTimeRef.current = null;
+      setCallDuration(0);
+    } else {
+      connectToBackend();
     }
   };
 
@@ -393,81 +386,76 @@ const App = () => {
     }
   };
 
-  const clearMessages = () => {
-    setMessages([]);
-    stopAudio(); // Also stop any playing audio
-  };
-
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-blue-900 to-purple-900">
-      <div className="container mx-auto px-4 py-6 h-screen flex flex-col">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 bg-gradient-to-r from-blue-500 to-purple-600 rounded-lg flex items-center justify-center">
-              <Volume2 className="text-white w-6 h-6" />
+    <div className="min-h-screen bg-black text-white flex flex-col">
+      {/* Header - Call Status */}
+      <div className="bg-gray-900 px-6 py-4 border-b border-gray-700">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-4">
+            <div className="w-12 h-12 bg-blue-600 rounded-full flex items-center justify-center">
+              <Bot className="w-6 h-6" />
             </div>
             <div>
-              <h1 className="text-2xl font-bold text-white">
-                AI Voice Assistant
-              </h1>
-              <p className="text-blue-300 text-sm">
-                Streaming TTS from backend •{" "}
-                {useStreamedAudio ? "Custom TTS" : "Browser TTS"}
+              <h1 className="text-lg font-semibold">AI Assistant</h1>
+              <p className="text-sm text-gray-400">
+                {isConnected ? "Connected" : "Disconnected"}
               </p>
             </div>
           </div>
 
           <div className="flex items-center space-x-4">
-            {/* Audio Status */}
-            {isPlaying && (
-              <div className="flex items-center space-x-2 text-green-400 text-sm">
-                <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
-                <span>Playing Audio</span>
+            {isConnected && (
+              <div className="text-sm text-gray-400">
+                {formatDuration(callDuration)}
               </div>
             )}
 
-            {/* Connection Status */}
-            <div className="flex items-center space-x-2">
-              {isConnected ? (
-                <Wifi className="w-4 h-4 text-green-400" />
-              ) : (
-                <WifiOff className="w-4 h-4 text-red-400" />
-              )}
-              <span className="text-white text-sm">
-                {isConnected ? "Connected" : "Disconnected"}
-              </span>
-            </div>
+            <button
+              onClick={() => setShowSettings(!showSettings)}
+              className="p-2 rounded-full hover:bg-gray-700 transition-colors"
+            >
+              <Settings className="w-5 h-5" />
+            </button>
           </div>
         </div>
 
-        {/* Settings */}
-        <div className="bg-white/10 backdrop-blur-md rounded-xl p-4 mb-6">
-          <div className="flex items-center justify-between flex-wrap gap-4">
-            <div className="flex items-center space-x-4">
-              <div className="flex items-center space-x-2">
-                <Settings className="text-white w-4 h-4" />
+        {/* Settings Panel */}
+        {showSettings && (
+          <div className="mt-4 p-4 bg-gray-800 rounded-lg">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-medium">Settings</h3>
+              <button
+                onClick={() => setShowSettings(false)}
+                className="text-gray-400 hover:text-white"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm text-gray-400 mb-2">
+                  Voice
+                </label>
                 <select
                   value={currentSpeaker || ""}
                   onChange={(e) => changeSpeaker(e.target.value)}
                   disabled={!isConnected || availableSpeakers.length === 0}
-                  className="bg-white/20 text-white rounded-lg px-3 py-1 text-sm disabled:opacity-50"
+                  className="w-full bg-gray-700 rounded-lg px-3 py-2 text-sm"
                 >
-                  <option value="">Default Voice</option>
+                  <option value="">Default</option>
                   {availableSpeakers.map((speaker) => (
-                    <option
-                      key={speaker}
-                      value={speaker}
-                      className="text-black"
-                    >
+                    <option key={speaker} value={speaker}>
                       {speaker}
                     </option>
                   ))}
                 </select>
               </div>
 
-              <div className="flex items-center space-x-2">
-                <Volume2 className="text-white w-4 h-4" />
+              <div>
+                <label className="block text-sm text-gray-400 mb-2">
+                  Volume: {Math.round(volume * 100)}%
+                </label>
                 <input
                   type="range"
                   min="0"
@@ -475,195 +463,158 @@ const App = () => {
                   step="0.1"
                   value={volume}
                   onChange={(e) => setVolume(parseFloat(e.target.value))}
-                  className="w-20"
+                  className="w-full"
                 />
-                <span className="text-white text-sm">
-                  {Math.round(volume * 100)}%
-                </span>
               </div>
             </div>
-
-            <div className="flex items-center space-x-2">
-              <label className="flex items-center space-x-2 text-white text-sm">
-                <input
-                  type="checkbox"
-                  checked={useStreamedAudio}
-                  onChange={(e) => setUseStreamedAudio(e.target.checked)}
-                  className="rounded"
-                />
-                <span>Use Streamed Audio</span>
-              </label>
-            </div>
-          </div>
-        </div>
-
-        {/* Audio Progress */}
-        {currentAudio && isPlaying && (
-          <div className="bg-white/10 backdrop-blur-md rounded-xl p-4 mb-4">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-white text-sm">Now Playing</span>
-              <span className="text-blue-300 text-xs">
-                {Math.round(currentAudio.currentTime || 0)}s /{" "}
-                {Math.round(currentAudio.duration || 0)}s
-              </span>
-            </div>
-            <div className="w-full bg-white/20 rounded-full h-2 mb-2">
-              <div
-                className="bg-gradient-to-r from-blue-500 to-purple-500 h-2 rounded-full transition-all"
-                style={{
-                  width: `${
-                    ((currentAudio.currentTime || 0) /
-                      (currentAudio.duration || 1)) *
-                    100
-                  }%`,
-                }}
-              ></div>
-            </div>
-            <p className="text-white text-sm truncate">{currentAudio.text}</p>
           </div>
         )}
+      </div>
 
-        {/* Messages */}
-        <div className="flex-1 bg-white/10 backdrop-blur-md rounded-xl p-6 mb-6 overflow-hidden flex flex-col">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-white font-semibold">Conversation</h2>
-            <div className="flex items-center space-x-2">
-              {isAIThinking && (
-                <div className="flex items-center space-x-2 text-yellow-400 text-sm">
-                  <div className="w-2 h-2 bg-yellow-400 rounded-full animate-bounce"></div>
-                  <span>AI thinking...</span>
-                </div>
-              )}
-              <button
-                onClick={clearMessages}
-                className="text-blue-300 hover:text-white text-sm transition-colors"
-              >
-                Clear
-              </button>
+      {/* Main Call Interface */}
+      <div className="flex-1 flex flex-col justify-center items-center p-8">
+        {!isConnected ? (
+          // Connection Screen
+          <div className="text-center space-y-8">
+            <div className="w-32 h-32 bg-gray-800 rounded-full flex items-center justify-center mx-auto">
+              <Bot className="w-16 h-16 text-gray-400" />
             </div>
-          </div>
 
-          <div className="flex-1 overflow-y-auto space-y-4">
-            {messages.length === 0 ? (
-              <div className="text-center text-blue-300 py-12">
-                <Mic className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                <p>Start by speaking or typing your message</p>
-                <p className="text-sm mt-2">
-                  Audio will stream from the backend when connected
-                </p>
-              </div>
-            ) : (
-              messages.map((message) => (
-                <div
-                  key={message.id}
-                  className={`flex ${
-                    message.type === "user" ? "justify-end" : "justify-start"
-                  }`}
-                >
-                  <div
-                    className={`max-w-[80%] rounded-2xl p-4 ${
-                      message.type === "user"
-                        ? "bg-gradient-to-r from-blue-500 to-blue-600 text-white"
-                        : message.type === "system"
-                        ? "bg-red-500/20 text-red-200 border border-red-400/30"
-                        : "bg-white/20 text-white"
-                    }`}
-                  >
-                    <div className="flex items-start justify-between">
-                      <p className="mb-1 flex-1">{message.content}</p>
-                      {message.isStreaming && (
-                        <div className="ml-2 w-2 h-2 bg-blue-400 rounded-full animate-pulse"></div>
-                      )}
-                    </div>
-                    <p className="text-xs opacity-70">{message.timestamp}</p>
-                  </div>
-                </div>
-              ))
-            )}
-            <div ref={messagesEndRef} />
-          </div>
-        </div>
-
-        {/* Input Area */}
-        <div className="bg-white/10 backdrop-blur-md rounded-xl p-4">
-          {/* Speech Recognition Display */}
-          {(isListening || transcript) && (
-            <div className="mb-4 p-3 bg-blue-500/20 rounded-lg border border-blue-400/30">
-              <div className="flex items-center space-x-2 mb-2">
-                <div
-                  className={`w-2 h-2 rounded-full ${
-                    isListening ? "bg-red-500 animate-pulse" : "bg-gray-400"
-                  }`}
-                ></div>
-                <span className="text-white text-sm">
-                  {isListening ? "Listening..." : "Speech captured"}
-                </span>
-              </div>
-              <p className="text-white">{transcript || "Say something..."}</p>
+            <div>
+              <h2 className="text-2xl font-semibold mb-2">
+                AI Voice Assistant
+              </h2>
+              <p className="text-gray-400">Tap to start a conversation</p>
             </div>
-          )}
 
-          <div className="flex items-center space-x-3">
-            {/* Voice Input */}
             <button
-              onClick={isListening ? stopListening : startListening}
-              className={`p-3 rounded-full transition-all duration-200 ${
-                isListening
-                  ? "bg-red-500 hover:bg-red-600 animate-pulse"
-                  : "bg-blue-500 hover:bg-blue-600"
+              onClick={toggleConnection}
+              className="w-20 h-20 bg-green-600 hover:bg-green-700 rounded-full flex items-center justify-center transition-colors"
+            >
+              <Phone className="w-8 h-8" />
+            </button>
+          </div>
+        ) : (
+          // Active Call Screen
+          <div className="w-full max-w-md mx-auto text-center space-y-8">
+            {/* Avatar */}
+            <div
+              className={`w-32 h-32 rounded-full flex items-center justify-center mx-auto transition-all ${
+                isPlaying
+                  ? "bg-blue-600 animate-pulse"
+                  : isAIThinking
+                  ? "bg-yellow-600 animate-pulse"
+                  : "bg-gray-700"
               }`}
             >
-              {isListening ? (
-                <MicOff className="text-white w-5 h-5" />
-              ) : (
-                <Mic className="text-white w-5 h-5" />
-              )}
-            </button>
+              <Bot className="w-16 h-16" />
+            </div>
 
-            {/* Text Input */}
-            <input
-              type="text"
-              value={transcript}
-              onChange={(e) => setTranscript(e.target.value)}
-              onKeyPress={(e) => e.key === "Enter" && sendMessage()}
-              placeholder="Type your message or use voice input..."
-              className="flex-1 bg-white/20 text-white placeholder-blue-200 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-400"
-            />
+            {/* Status */}
+            <div className="space-y-2">
+              <div className="text-lg font-semibold">
+                {isAIThinking
+                  ? "AI is thinking..."
+                  : isPlaying
+                  ? "AI is speaking..."
+                  : isListening
+                  ? "Listening..."
+                  : "Ready to chat"}
+              </div>
 
-            {/* Send Button */}
-            <button
-              onClick={() => sendMessage()}
-              disabled={!transcript.trim() || !isConnected}
-              className="p-3 rounded-full bg-green-500 hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-            >
-              <Send className="text-white w-5 h-5" />
-            </button>
+              <div className="text-sm text-gray-400">
+                Call duration: {formatDuration(callDuration)}
+              </div>
+            </div>
 
-            {/* Audio Control */}
-            <button
-              onClick={isPlaying ? stopAudio : null}
-              disabled={!isPlaying}
-              className="p-3 rounded-full bg-purple-500 hover:bg-purple-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-            >
-              {isPlaying ? (
-                <Square className="text-white w-5 h-5" />
-              ) : (
-                <Volume2 className="text-white w-5 h-5" />
-              )}
-            </button>
-          </div>
+            {/* Current Transcript */}
+            {transcript && (
+              <div className="bg-gray-800 rounded-lg p-4 mx-4">
+                <div className="text-sm text-gray-400 mb-2">You said:</div>
+                <div className="text-white">{transcript}</div>
+              </div>
+            )}
 
-          {/* Controls Info */}
-          <div className="flex justify-center mt-3">
-            <div className="flex items-center space-x-4 text-xs text-blue-300">
-              <span>🎤 Voice input</span>
-              <span>⌨️ Text chat</span>
-              <span>🔊 Streamed audio</span>
-              <span>🎵 Sequential playback</span>
+            {/* Recent Messages */}
+            <div className="space-y-3 max-h-40 overflow-y-auto">
+              {messages.slice(-2).map((message) => (
+                <div
+                  key={message.id}
+                  className={`px-4 py-2 rounded-lg mx-4 text-sm ${
+                    message.type === "user"
+                      ? "bg-blue-600 text-right"
+                      : "bg-gray-700 text-left"
+                  }`}
+                >
+                  <div className="flex items-center space-x-2 mb-1">
+                    {message.type === "user" ? (
+                      <User className="w-4 h-4 ml-auto" />
+                    ) : (
+                      <Bot className="w-4 h-4" />
+                    )}
+                    <span className="text-xs text-gray-300">
+                      {message.timestamp}
+                    </span>
+                  </div>
+                  <div>{message.content}</div>
+                  {message.isStreaming && (
+                    <div className="w-2 h-2 bg-blue-400 rounded-full animate-pulse mt-1"></div>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {/* Call Controls */}
+            <div className="flex items-center justify-center space-x-8 mt-8">
+              {/* Mute/Unmute */}
+              <button
+                onClick={isListening ? stopListening : startListening}
+                disabled={isAIThinking}
+                className={`w-16 h-16 rounded-full flex items-center justify-center transition-colors ${
+                  isListening
+                    ? "bg-red-600 hover:bg-red-700"
+                    : "bg-gray-700 hover:bg-gray-600"
+                } disabled:opacity-50`}
+              >
+                {isListening ? (
+                  <MicOff className="w-6 h-6" />
+                ) : (
+                  <Mic className="w-6 h-6" />
+                )}
+              </button>
+
+              {/* End Call */}
+              <button
+                onClick={toggleConnection}
+                className="w-20 h-20 bg-red-600 hover:bg-red-700 rounded-full flex items-center justify-center transition-colors"
+              >
+                <PhoneOff className="w-8 h-8" />
+              </button>
+
+              {/* Volume */}
+              <button className="w-16 h-16 bg-gray-700 hover:bg-gray-600 rounded-full flex items-center justify-center transition-colors">
+                {volume > 0 ? (
+                  <Volume2 className="w-6 h-6" />
+                ) : (
+                  <VolumeX className="w-6 h-6" />
+                )}
+              </button>
+            </div>
+
+            {/* Hint Text */}
+            <div className="text-xs text-gray-500 mt-4">
+              {isListening ? "Speak now..." : "Tap microphone to speak"}
             </div>
           </div>
-        </div>
+        )}
       </div>
+
+      {/* Connection Status Indicator */}
+      <div
+        className={`absolute top-4 right-4 w-3 h-3 rounded-full ${
+          isConnected ? "bg-green-500" : "bg-red-500"
+        }`}
+      ></div>
     </div>
   );
 };
